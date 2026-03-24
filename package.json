@@ -1,0 +1,13 @@
+{
+  "name": "codex-thread-manager",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "codex-thread-manager": "./bin/codex-thread-manager"
+  },
+  "scripts": {
+    "list": "./bin/codex-thread-manager list",
+    "test": "node --disable-warning=ExperimentalWarning --experimental-strip-types --test tests/*.test.ts"
+  }
+}
