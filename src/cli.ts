@@ -113,7 +113,7 @@ async function runDelete(argv: string[]): Promise<void> {
     allowPositionals: true,
     options: {
       all: { type: "boolean", default: false },
-      dryRun: { type: "boolean", default: false },
+      "dry-run": { type: "boolean", default: false },
       yes: { type: "boolean", default: false },
       root: { type: "string", default: "~/.codex" },
       tree: { type: "string", default: "date" },
@@ -128,7 +128,9 @@ async function runDelete(argv: string[]): Promise<void> {
 
   const treeMode = assertTreeMode(parsed.values.tree);
   const scan = await scanCodexRoot(parsed.values.root);
-  const targets = parsed.positionals.length > 0
+  const targets = parsed.values.all
+    ? scan.sessions
+    : parsed.positionals.length > 0
     ? resolveSessionSelectors(scan.sessions, parsed.positionals)
     : await selectSessionsInteractively(scan.sessions, treeMode, parsed.values.all);
 
@@ -140,7 +142,7 @@ async function runDelete(argv: string[]): Promise<void> {
   const preview = renderDeletePlan(plan);
   console.log(preview);
 
-  if (parsed.values.dryRun) {
+  if (parsed.values["dry-run"]) {
     return;
   }
 

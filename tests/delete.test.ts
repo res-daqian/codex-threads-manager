@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { test } from "node:test";
 
@@ -134,6 +135,81 @@ test("delete planning and execution remove one session while preserving others",
     const rescan = await scanCodexRoot(codexRoot);
     assert.equal(rescan.byId.has("019d1111-1111-7111-a111-111111111111"), false);
     assert.equal(rescan.byId.has("019d2222-2222-7222-a222-222222222222"), true);
+  });
+});
+
+test("CLI accepts --dry-run and delete --all removes all sessions under a temp root", async () => {
+  await withTempDir(async (tempDir) => {
+    const codexRoot = path.join(tempDir, ".codex");
+    await createRollout(codexRoot, {
+      id: "019d1111-1111-7111-a111-111111111111",
+      year: "2026",
+      month: "03",
+      day: "24",
+      timestamp: "2026-03-24T10:00:00.000Z",
+      cwd: "/first",
+    });
+    await createRollout(codexRoot, {
+      id: "019d2222-2222-7222-a222-222222222222",
+      year: "2026",
+      month: "03",
+      day: "24",
+      timestamp: "2026-03-24T11:00:00.000Z",
+      cwd: "/second",
+    });
+    await writeJsonl(path.join(codexRoot, "session_index.jsonl"), [
+      {
+        id: "019d1111-1111-7111-a111-111111111111",
+        thread_name: "First",
+        updated_at: "2026-03-24T10:05:00.000Z",
+      },
+      {
+        id: "019d2222-2222-7222-a222-222222222222",
+        thread_name: "Second",
+        updated_at: "2026-03-24T11:05:00.000Z",
+      },
+    ]);
+    createStateDb(path.join(codexRoot, "state_5.sqlite"), {
+      threads: [
+        {
+          id: "019d1111-1111-7111-a111-111111111111",
+          rolloutPath: path.join(codexRoot, "sessions", "2026", "03", "24", "first.jsonl"),
+          createdAt: 1_774_355_000,
+          updatedAt: 1_774_356_000,
+          cwd: "/first",
+          title: "First",
+        },
+        {
+          id: "019d2222-2222-7222-a222-222222222222",
+          rolloutPath: path.join(codexRoot, "sessions", "2026", "03", "24", "second.jsonl"),
+          createdAt: 1_774_357_000,
+          updatedAt: 1_774_358_000,
+          cwd: "/second",
+          title: "Second",
+        },
+      ],
+    });
+    createLogsDb(path.join(codexRoot, "logs_1.sqlite"), []);
+
+    const cliPath = path.join(process.cwd(), "bin", "codex-thread-manager");
+    const dryRun = spawnSync(
+      cliPath,
+      ["delete", "--dry-run", "--root", codexRoot, "019d1111"],
+      { encoding: "utf8" },
+    );
+    assert.equal(dryRun.status, 0, dryRun.stderr);
+    assert.match(dryRun.stdout, /Delete preview/);
+
+    const deleteAll = spawnSync(
+      cliPath,
+      ["delete", "--all", "--yes", "--root", codexRoot],
+      { encoding: "utf8" },
+    );
+    assert.equal(deleteAll.status, 0, deleteAll.stderr);
+    assert.match(deleteAll.stdout, /Deleted successfully/);
+
+    const rescan = await scanCodexRoot(codexRoot);
+    assert.equal(rescan.sessions.length, 0);
   });
 });
 

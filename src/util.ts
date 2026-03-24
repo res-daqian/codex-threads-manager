@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { DatabaseSync } from "node:sqlite";
+import { spawnSync } from "node:child_process";
 
 export function expandHome(inputPath: string): string {
   if (inputPath === "~") {
@@ -137,19 +137,6 @@ export async function readLines(filePath: string): Promise<string[]> {
   return content.split(/\r?\n/);
 }
 
-export function openDatabase(filePath: string): DatabaseSync {
-  const db = new DatabaseSync(filePath);
-  db.exec("PRAGMA foreign_keys = ON");
-  return db;
-}
-
-export function tableExists(db: DatabaseSync, tableName: string): boolean {
-  const row = db
-    .prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?")
-    .get(tableName) as { present?: number } | undefined;
-  return row?.present === 1;
-}
-
 export async function removeEmptyDirectories(startDirectory: string, stopDirectory: string): Promise<void> {
   let current = startDirectory;
   const normalizedStop = path.resolve(stopDirectory);
@@ -169,4 +156,57 @@ export async function removeEmptyDirectories(startDirectory: string, stopDirecto
     await fs.rmdir(current);
     current = path.dirname(current);
   }
+}
+
+export function sqliteQuery<T extends Record<string, unknown>>(
+  dbPath: string,
+  sql: string,
+  options: { readonly?: boolean } = {},
+): T[] {
+  const args = [];
+  if (options.readonly ?? true) {
+    args.push("-readonly");
+  }
+  args.push("-json", dbPath, sql);
+
+  const result = spawnSync("sqlite3", args, { encoding: "utf8" });
+  if (result.status !== 0) {
+    throw new Error(result.stderr.trim() || `sqlite3 query failed for ${dbPath}`);
+  }
+
+  const output = result.stdout.trim();
+  if (!output) {
+    return [];
+  }
+
+  return JSON.parse(output) as T[];
+}
+
+export function sqliteExec(
+  dbPath: string,
+  statements: string[],
+  options: { readonly?: boolean } = {},
+): void {
+  const args = [];
+  if (options.readonly ?? false) {
+    args.push("-readonly");
+  }
+  args.push(dbPath);
+
+  const result = spawnSync("sqlite3", args, {
+    encoding: "utf8",
+    input: `${statements.join("\n")}\n`,
+  });
+
+  if (result.status !== 0) {
+    throw new Error(result.stderr.trim() || `sqlite3 exec failed for ${dbPath}`);
+  }
+}
+
+export function tableExists(dbPath: string, tableName: string): boolean {
+  const rows = sqliteQuery<{ present?: number }>(
+    dbPath,
+    `SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = '${tableName.replaceAll("'", "''")}'`,
+  );
+  return rows[0]?.present === 1;
 }

@@ -6,9 +6,9 @@ import {
   fileExists,
   formatTimestamp,
   listFilesRecursively,
-  openDatabase,
   parseTimestamp,
   readLines,
+  sqliteQuery,
   sortSessionsByUpdatedAtDesc,
   tableExists,
 } from "./util.ts";
@@ -208,13 +208,12 @@ async function scanStateRows(stateDbPath: string): Promise<Map<string, ThreadSta
     return results;
   }
 
-  const db = openDatabase(stateDbPath);
   try {
-    if (!tableExists(db, "threads")) {
+    if (!tableExists(stateDbPath, "threads")) {
       return results;
     }
 
-    const rows = db.prepare(`
+    const rows = sqliteQuery<Record<string, any>>(stateDbPath, `
       SELECT
         id,
         rollout_path,
@@ -241,38 +240,38 @@ async function scanStateRows(stateDbPath: string): Promise<Map<string, ThreadSta
         model,
         reasoning_effort
       FROM threads
-    `).all() as Array<Record<string, any>>;
+    `);
 
     for (const row of rows) {
-      results.set(row.id, {
-        id: row.id,
-        rolloutPath: row.rollout_path ?? undefined,
+      results.set(row.id as string, {
+        id: row.id as string,
+        rolloutPath: (row.rollout_path as string | null) ?? undefined,
         createdAt: typeof row.created_at === "number" ? row.created_at : undefined,
         updatedAt: typeof row.updated_at === "number" ? row.updated_at : undefined,
-        source: row.source ?? undefined,
-        modelProvider: row.model_provider ?? undefined,
-        cwd: row.cwd ?? undefined,
-        title: row.title ?? undefined,
-        sandboxPolicy: row.sandbox_policy ?? undefined,
-        approvalMode: row.approval_mode ?? undefined,
-        tokensUsed: row.tokens_used ?? undefined,
+        source: (row.source as string | null) ?? undefined,
+        modelProvider: (row.model_provider as string | null) ?? undefined,
+        cwd: (row.cwd as string | null) ?? undefined,
+        title: (row.title as string | null) ?? undefined,
+        sandboxPolicy: (row.sandbox_policy as string | null) ?? undefined,
+        approvalMode: (row.approval_mode as string | null) ?? undefined,
+        tokensUsed: typeof row.tokens_used === "number" ? row.tokens_used : undefined,
         hasUserEvent: Boolean(row.has_user_event),
         archived: Boolean(row.archived),
-        archivedAt: row.archived_at ?? undefined,
-        gitSha: row.git_sha ?? undefined,
-        gitBranch: row.git_branch ?? undefined,
-        gitOriginUrl: row.git_origin_url ?? undefined,
-        cliVersion: row.cli_version ?? undefined,
-        firstUserMessage: row.first_user_message ?? undefined,
-        agentNickname: row.agent_nickname ?? undefined,
-        agentRole: row.agent_role ?? undefined,
-        memoryMode: row.memory_mode ?? undefined,
-        model: row.model ?? undefined,
-        reasoningEffort: row.reasoning_effort ?? undefined,
+        archivedAt: typeof row.archived_at === "number" ? row.archived_at : undefined,
+        gitSha: (row.git_sha as string | null) ?? undefined,
+        gitBranch: (row.git_branch as string | null) ?? undefined,
+        gitOriginUrl: (row.git_origin_url as string | null) ?? undefined,
+        cliVersion: (row.cli_version as string | null) ?? undefined,
+        firstUserMessage: (row.first_user_message as string | null) ?? undefined,
+        agentNickname: (row.agent_nickname as string | null) ?? undefined,
+        agentRole: (row.agent_role as string | null) ?? undefined,
+        memoryMode: (row.memory_mode as string | null) ?? undefined,
+        model: (row.model as string | null) ?? undefined,
+        reasoningEffort: (row.reasoning_effort as string | null) ?? undefined,
       });
     }
-  } finally {
-    db.close();
+  } catch {
+    return results;
   }
 
   return results;
@@ -284,23 +283,23 @@ async function scanLogCounts(dbPath: string, tableName: string): Promise<Map<str
     return results;
   }
 
-  const db = openDatabase(dbPath);
   try {
-    if (!tableExists(db, tableName)) {
+    if (!tableExists(dbPath, tableName)) {
       return results;
     }
 
-    const rows = db
-      .prepare(`SELECT thread_id, COUNT(*) AS count FROM ${tableName} WHERE thread_id IS NOT NULL GROUP BY thread_id`)
-      .all() as Array<{ thread_id?: string; count?: number }>;
+    const rows = sqliteQuery<{ thread_id?: string; count?: number }>(
+      dbPath,
+      `SELECT thread_id, COUNT(*) AS count FROM ${tableName} WHERE thread_id IS NOT NULL GROUP BY thread_id`,
+    );
 
     for (const row of rows) {
       if (typeof row.thread_id === "string") {
         results.set(row.thread_id, row.count ?? 0);
       }
     }
-  } finally {
-    db.close();
+  } catch {
+    return results;
   }
 
   return results;

@@ -1,6 +1,6 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
-import { fileExists, openDatabase, removeEmptyDirectories, tableExists } from "./util.ts";
+import { fileExists, removeEmptyDirectories, sqliteExec, sqliteQuery, tableExists } from "./util.ts";
 import type { DeletePlan, DeleteResult, DeletionTarget, ScanResult, SessionRecord } from "./types.ts";
 
 export async function planDeletion(
@@ -48,23 +48,30 @@ async function collectStateDeletionDetails(
   if (!(await fileExists(dbPath))) {
     return details;
   }
-  const db = openDatabase(dbPath);
+
   try {
-    const hasThreads = tableExists(db, "threads");
-    const hasDynamicTools = tableExists(db, "thread_dynamic_tools");
-    const hasStage1Outputs = tableExists(db, "stage1_outputs");
-    const hasLogs = tableExists(db, "logs");
+    const hasThreads = tableExists(dbPath, "threads");
+    const hasDynamicTools = tableExists(dbPath, "thread_dynamic_tools");
+    const hasStage1Outputs = tableExists(dbPath, "stage1_outputs");
+    const hasLogs = tableExists(dbPath, "logs");
 
     for (const id of ids) {
       details.set(id, {
-        threadRowCount: hasThreads ? countRows(db, "threads", "id", id) : 0,
-        threadDynamicToolsCount: hasDynamicTools ? countRows(db, "thread_dynamic_tools", "thread_id", id) : 0,
-        stage1OutputsCount: hasStage1Outputs ? countRows(db, "stage1_outputs", "thread_id", id) : 0,
-        stateLogsCount: hasLogs ? countRows(db, "logs", "thread_id", id) : 0,
+        threadRowCount: hasThreads ? countRows(dbPath, "threads", "id", id) : 0,
+        threadDynamicToolsCount: hasDynamicTools ? countRows(dbPath, "thread_dynamic_tools", "thread_id", id) : 0,
+        stage1OutputsCount: hasStage1Outputs ? countRows(dbPath, "stage1_outputs", "thread_id", id) : 0,
+        stateLogsCount: hasLogs ? countRows(dbPath, "logs", "thread_id", id) : 0,
       });
     }
-  } finally {
-    db.close();
+  } catch {
+    for (const id of ids) {
+      details.set(id, {
+        threadRowCount: 0,
+        threadDynamicToolsCount: 0,
+        stage1OutputsCount: 0,
+        stateLogsCount: 0,
+      });
+    }
   }
 
   return details;
@@ -75,20 +82,26 @@ async function collectLogsDeletionDetails(dbPath: string, ids: string[]): Promis
   if (!(await fileExists(dbPath))) {
     return details;
   }
-  const db = openDatabase(dbPath);
+
   try {
-    const hasLogs = tableExists(db, "logs");
+    const hasLogs = tableExists(dbPath, "logs");
     for (const id of ids) {
-      details.set(id, hasLogs ? countRows(db, "logs", "thread_id", id) : 0);
+      details.set(id, hasLogs ? countRows(dbPath, "logs", "thread_id", id) : 0);
     }
-  } finally {
-    db.close();
+  } catch {
+    for (const id of ids) {
+      details.set(id, 0);
+    }
   }
   return details;
 }
 
-function countRows(db: ReturnType<typeof openDatabase>, tableName: string, columnName: string, value: string): number {
-  const row = db.prepare(`SELECT COUNT(*) AS count FROM ${tableName} WHERE ${columnName} = ?`).get(value) as { count?: number };
+function countRows(dbPath: string, tableName: string, columnName: string, value: string): number {
+  const escapedValue = value.replaceAll("'", "''");
+  const row = sqliteQuery<{ count?: number }>(
+    dbPath,
+    `SELECT COUNT(*) AS count FROM ${tableName} WHERE ${columnName} = '${escapedValue}'`,
+  )[0];
   return row.count ?? 0;
 }
 
@@ -167,42 +180,33 @@ async function deleteStateRows(plan: DeletePlan, result: DeleteResult): Promise<
   if (!(await fileExists(stateDbPath))) {
     return;
   }
-  const db = openDatabase(stateDbPath);
-  try {
-    const hasThreads = tableExists(db, "threads");
-    const hasDynamicTools = tableExists(db, "thread_dynamic_tools");
-    const hasStage1Outputs = tableExists(db, "stage1_outputs");
-    const hasLogs = tableExists(db, "logs");
+  const hasThreads = tableExists(stateDbPath, "threads");
+  const hasDynamicTools = tableExists(stateDbPath, "thread_dynamic_tools");
+  const hasStage1Outputs = tableExists(stateDbPath, "stage1_outputs");
+  const hasLogs = tableExists(stateDbPath, "logs");
 
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      for (const target of plan.targets) {
-        const id = target.session.id;
-        if (hasDynamicTools) {
-          const changes = db.prepare("DELETE FROM thread_dynamic_tools WHERE thread_id = ?").run(id) as { changes?: number };
-          result.removedThreadDynamicToolsRows += changes.changes ?? 0;
-        }
-        if (hasStage1Outputs) {
-          const changes = db.prepare("DELETE FROM stage1_outputs WHERE thread_id = ?").run(id) as { changes?: number };
-          result.removedStage1OutputsRows += changes.changes ?? 0;
-        }
-        if (hasLogs) {
-          const changes = db.prepare("DELETE FROM logs WHERE thread_id = ?").run(id) as { changes?: number };
-          result.removedStateLogRows += changes.changes ?? 0;
-        }
-        if (hasThreads) {
-          const changes = db.prepare("DELETE FROM threads WHERE id = ?").run(id) as { changes?: number };
-          result.removedThreadRows += changes.changes ?? 0;
-        }
-      }
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
+  const statements = ["PRAGMA foreign_keys = ON;", "BEGIN IMMEDIATE;"];
+  for (const target of plan.targets) {
+    const escapedId = target.session.id.replaceAll("'", "''");
+    if (hasDynamicTools) {
+      statements.push(`DELETE FROM thread_dynamic_tools WHERE thread_id = '${escapedId}';`);
+      result.removedThreadDynamicToolsRows += target.threadDynamicToolsCount;
     }
-  } finally {
-    db.close();
+    if (hasStage1Outputs) {
+      statements.push(`DELETE FROM stage1_outputs WHERE thread_id = '${escapedId}';`);
+      result.removedStage1OutputsRows += target.stage1OutputsCount;
+    }
+    if (hasLogs) {
+      statements.push(`DELETE FROM logs WHERE thread_id = '${escapedId}';`);
+      result.removedStateLogRows += target.stateLogsCount;
+    }
+    if (hasThreads) {
+      statements.push(`DELETE FROM threads WHERE id = '${escapedId}';`);
+      result.removedThreadRows += target.threadRowCount;
+    }
   }
+  statements.push("COMMIT;");
+  sqliteExec(stateDbPath, statements);
 }
 
 async function deleteLogsRows(plan: DeletePlan, result: DeleteResult): Promise<void> {
@@ -210,26 +214,18 @@ async function deleteLogsRows(plan: DeletePlan, result: DeleteResult): Promise<v
   if (!(await fileExists(logsDbPath))) {
     return;
   }
-  const db = openDatabase(logsDbPath);
-  try {
-    if (!tableExists(db, "logs")) {
-      return;
-    }
-
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      for (const target of plan.targets) {
-        const changes = db.prepare("DELETE FROM logs WHERE thread_id = ?").run(target.session.id) as { changes?: number };
-        result.removedLogsRows += changes.changes ?? 0;
-      }
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
-  } finally {
-    db.close();
+  if (!tableExists(logsDbPath, "logs")) {
+    return;
   }
+
+  const statements = ["BEGIN IMMEDIATE;"];
+  for (const target of plan.targets) {
+    const escapedId = target.session.id.replaceAll("'", "''");
+    statements.push(`DELETE FROM logs WHERE thread_id = '${escapedId}';`);
+    result.removedLogsRows += target.logsCount;
+  }
+  statements.push("COMMIT;");
+  sqliteExec(logsDbPath, statements);
 }
 
 async function deleteSnapshots(plan: DeletePlan, result: DeleteResult): Promise<void> {
